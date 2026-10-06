@@ -6,8 +6,8 @@ const path = require('path');
 const fs = require('fs');
 
 const PORT = process.env.PORT || 3000;
-const SIZES = (process.env.GROUP_SIZES || '5,5,5,6').split(',').map(n => parseInt(n, 10));
-const TOTAL = SIZES.reduce((a, b) => a + b, 0);
+let SIZES = (process.env.GROUP_SIZES || '5,5,5,6').split(',').map(n => parseInt(n, 10));
+let TOTAL = SIZES.reduce((a, b) => a + b, 0);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'app.db');
 if (!process.env.ADMIN_PASSWORD) console.warn('DIQQAT: ADMIN_PASSWORD o\'rnatilmagan, standart "admin123" ishlatilmoqda!');
@@ -23,6 +23,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS participants (
   grp INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )`);
+
+db.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
+const saved = db.prepare("SELECT v FROM meta WHERE k = 'sizes'").get();
+if (saved) { SIZES = JSON.parse(saved.v); TOTAL = SIZES.reduce((a, b) => a + b, 0); }
 
 const count = () => db.prepare('SELECT COUNT(*) c FROM participants').get().c;
 
@@ -59,6 +63,12 @@ const joinTx = db.transaction((name, token) => {
 const resetTx = db.transaction(() => {
   db.prepare('DELETE FROM participants').run();
   db.prepare("DELETE FROM sqlite_sequence WHERE name = 'participants'").run();
+});
+
+const configTx = db.transaction((sizes) => {
+  resetTx();
+  db.prepare("INSERT OR REPLACE INTO meta (k, v) VALUES ('sizes', ?)").run(JSON.stringify(sizes));
+  SIZES = sizes; TOTAL = sizes.reduce((a, b) => a + b, 0);
 });
 
 function publicState(token) {
@@ -111,6 +121,16 @@ app.post('/api/admin/reset', (req, res) => {
   if (!isAdmin(req)) return res.status(401).json({ error: 'Parol noto\'g\'ri' });
   resetTx();
   res.json({ ok: true });
+});
+
+app.post('/api/admin/config', (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Parol noto\'g\'ri' });
+  const sizes = (req.body && req.body.sizes) || [];
+  const ok = Array.isArray(sizes) && sizes.length >= 1 && sizes.length <= 50 &&
+    sizes.every(n => Number.isInteger(n) && n >= 1 && n <= 100) && sizes.reduce((a, b) => a + b, 0) <= 500;
+  if (!ok) return res.status(400).json({ error: 'Guruh hajmlari noto\'g\'ri (har biri 1 dan 100 gacha butun son).' });
+  configTx(sizes);
+  res.json({ ok: true, sizes });
 });
 
 app.listen(PORT, () => console.log(`Server ishga tushdi: http://localhost:${PORT}  (admin: /admin)`));
